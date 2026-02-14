@@ -1,36 +1,49 @@
 # =========================
+# STOP ON ERROR (IMPORTANT FOR CSE)
+# =========================
+$ErrorActionPreference = "Stop"
+
+# =========================
 # CONFIGURATION
 # =========================
 
 $InnerVMName = "InnerVM"
 $InnerUsername = "Administrator"
-$InnerPassword = "YourPasswordHere"   # change this
+$InnerPassword = "YourPasswordHere"    # CHANGE THIS
 $OuterSavePath = "C:\OuterTemp"
 
-# Convert password
+# =========================
+# CREDENTIAL SETUP
+# =========================
+
 $SecurePass = ConvertTo-SecureString $InnerPassword -AsPlainText -Force
 $Cred = New-Object System.Management.Automation.PSCredential ($InnerUsername, $SecurePass)
 
-# Ensure outer folder exists
+# =========================
+# ENSURE OUTER FOLDER EXISTS
+# =========================
+
 if (!(Test-Path $OuterSavePath)) {
-    New-Item -ItemType Directory -Path $OuterSavePath
+    New-Item -ItemType Directory -Path $OuterSavePath | Out-Null
 }
 
 # =========================
-# STEP 1 - Run inside Inner VM
+# STEP 1 - RUN INSIDE INNER VM
 # =========================
 
 Invoke-Command -VMName $InnerVMName -Credential $Cred -ScriptBlock {
 
-    # Create Temp folder if missing
+    $ErrorActionPreference = "Stop"
+
+    # Ensure temp folder
     if (!(Test-Path "C:\Temp")) {
-        New-Item -ItemType Directory -Path "C:\Temp"
+        New-Item -ItemType Directory -Path "C:\Temp" | Out-Null
     }
 
-    # Save process list
-    Get-Process | Out-File "C:\Temp\InnerProcess.txt"
+    # Generate process file
+    Get-Process | Out-File "C:\Temp\InnerProcess.txt" -Force
 
-    # Create SMB Share
+    # Create SMB Share if not exists
     if (!(Get-SmbShare -Name "InnerShare" -ErrorAction SilentlyContinue)) {
         New-SmbShare -Name "InnerShare" -Path "C:\Temp" -FullAccess "Everyone"
     }
@@ -40,36 +53,50 @@ Invoke-Command -VMName $InnerVMName -Credential $Cred -ScriptBlock {
 Write-Host "Process file created and shared inside Inner VM." -ForegroundColor Green
 
 # =========================
-# STEP 2 - Get Inner VM IP
+# STEP 2 - GET INNER VM IP
 # =========================
 
-$InnerIP = (Invoke-Command -VMName $InnerVMName -Credential $Cred -ScriptBlock {
-    (Get-NetIPAddress -AddressFamily IPv4 `
-        | Where-Object {$_.IPAddress -notlike "169.*"} `
-        | Select-Object -First 1).IPAddress
-})
+$InnerIP = Invoke-Command -VMName $InnerVMName -Credential $Cred -ScriptBlock {
+    (Get-NetIPAddress -AddressFamily IPv4 |
+        Where-Object { $_.IPAddress -notmatch '^169\.254' -and $_.IPAddress -ne "127.0.0.1" } |
+        Select-Object -First 1 -ExpandProperty IPAddress)
+}
 
-Write-Host "Inner VM IP is $InnerIP" -ForegroundColor Yellow
+if (-not $InnerIP) {
+    throw "Unable to retrieve Inner VM IP address."
+}
+
+Write-Host "Inner VM IP: $InnerIP" -ForegroundColor Yellow
 
 # =========================
-# STEP 3 - Map & Copy To Outer
+# STEP 3 - MAP SHARE
 # =========================
 
 $SharePath = "\\$InnerIP\InnerShare"
 $DriveName = "Z"
 
-# Remove drive if exists
 if (Get-PSDrive -Name $DriveName -ErrorAction SilentlyContinue) {
     Remove-PSDrive -Name $DriveName -Force
 }
 
-# Map drive
 New-PSDrive -Name $DriveName `
             -PSProvider FileSystem `
             -Root $SharePath `
-            -Credential $Cred
+            -Credential $Cred `
+            -ErrorAction Stop | Out-Null
 
-# Copy file to Outer VM
-Copy-Item "$DriveName:\InnerProcess.txt" "$OuterSavePath\CopiedFromInner.txt"
+# =========================
+# STEP 4 - COPY FILE TO OUTER VM
+# =========================
 
-Write-Host "File copied to outer VM successfully." -ForegroundColor Cyan
+Copy-Item "${DriveName}:\InnerProcess.txt" `
+          "$OuterSavePath\CopiedFromInner.txt" `
+          -Force `
+          -ErrorAction Stop
+
+Write-Host "File copied successfully to Outer VM." -ForegroundColor Cyan
+
+# =========================
+# SUCCESS EXIT
+# =========================
+exit 0
