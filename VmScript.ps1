@@ -1,69 +1,51 @@
-# ============================================
-# STRICT MODE FOR CSE
-# ============================================
 $ErrorActionPreference = "Stop"
 
-Write-Host "Starting Nested VM Process Sync Script..."
+Write-Host "Starting deployment..."
 
-# ============================================
-# ENSURE HYPER-V MODULE IS AVAILABLE
-# ============================================
-
-try {
-    Import-Module Hyper-V -ErrorAction Stop
-    Write-Host "Hyper-V module loaded successfully."
-}
-catch {
-    throw "Hyper-V PowerShell module is not available. Ensure Hyper-V + Management Tools are installed."
-}
-
-# ============================================
-# CONFIGURATION
-# ============================================
+# =======================================
+# CONFIG
+# =======================================
 
 $InnerVMName   = "InnerVM"
 $InnerUsername = "Administrator"
-$InnerPassword = "YourPasswordHere"   # CHANGE THIS
+$InnerPassword = "YourPasswordHere"   # CHANGE
 $OuterSavePath = "C:\OuterTemp"
-$DriveName     = "Z"
 
-# ============================================
-# CREATE CREDENTIAL
-# ============================================
-
-$SecurePass = ConvertTo-SecureString $InnerPassword -AsPlainText -Force
-$Cred       = New-Object System.Management.Automation.PSCredential ($InnerUsername, $SecurePass)
-
-# ============================================
-# VALIDATE INNER VM EXISTS & RUNNING
-# ============================================
-
-$VM = Get-VM -Name $InnerVMName -ErrorAction Stop
-
-if ($VM.State -ne "Running") {
-    throw "Inner VM is not running."
-}
-
-Write-Host "Inner VM is running."
-
-# ============================================
-# ENSURE OUTER DIRECTORY EXISTS
-# ============================================
+# =======================================
+# ENSURE OUTER FOLDER
+# =======================================
 
 if (!(Test-Path $OuterSavePath)) {
     New-Item -ItemType Directory -Path $OuterSavePath | Out-Null
 }
 
-# ============================================
-# STEP 1 - RUN INSIDE INNER VM
-# ============================================
+# =======================================
+# CREATE REAL WORK SCRIPT
+# =======================================
 
-Invoke-Command -VMName $InnerVMName -Credential $Cred -ScriptBlock {
+$NestedScriptPath = "C:\NestedExecution.ps1"
 
-    $ErrorActionPreference = "Stop"
+@"
+Import-Module Hyper-V
+
+`$SecurePass = ConvertTo-SecureString "$InnerPassword" -AsPlainText -Force
+`$Cred = New-Object System.Management.Automation.PSCredential ("$InnerUsername", `$SecurePass)
+
+# Validate VM
+`$VM = Get-VM -Name "$InnerVMName"
+
+if (`$VM.State -ne "Running") {
+    Start-VM -Name "$InnerVMName"
+    Start-Sleep -Seconds 20
+}
+
+# PowerShell Direct Session
+`$Session = New-PSSession -VMName "$InnerVMName" -Credential `$Cred
+
+Invoke-Command -Session `$Session -ScriptBlock {
 
     if (!(Test-Path "C:\Temp")) {
-        New-Item -ItemType Directory -Path "C:\Temp" | Out-Null
+        New-Item -ItemType Directory -Path "C:\Temp"
     }
 
     Get-Process | Out-File "C:\Temp\InnerProcess.txt" -Force
@@ -74,64 +56,44 @@ Invoke-Command -VMName $InnerVMName -Credential $Cred -ScriptBlock {
 
 }
 
-Write-Host "Process file created and shared inside Inner VM."
+Remove-PSSession `$Session
 
-# ============================================
-# STEP 2 - GET INNER VM IP
-# ============================================
-
-$InnerIP = Invoke-Command -VMName $InnerVMName -Credential $Cred -ScriptBlock {
-
+# Copy file to outer VM
+`$InnerIP = Invoke-Command -VMName "$InnerVMName" -Credential `$Cred -ScriptBlock {
     (Get-NetIPAddress -AddressFamily IPv4 |
-        Where-Object {
-            $_.IPAddress -notmatch '^169\.254' -and
-            $_.IPAddress -ne "127.0.0.1"
-        } |
+        Where-Object {`$_.IPAddress -notmatch '^169\.254'} |
         Select-Object -First 1 -ExpandProperty IPAddress)
-
 }
 
-if (-not $InnerIP) {
-    throw "Failed to retrieve Inner VM IP address."
+`$SharePath = "\\`$InnerIP\InnerShare"
+
+if (Get-PSDrive -Name Z -ErrorAction SilentlyContinue) {
+    Remove-PSDrive -Name Z -Force
 }
 
-Write-Host "Inner VM IP: $InnerIP"
+New-PSDrive -Name Z -PSProvider FileSystem -Root `$SharePath -Credential `$Cred
 
-# ============================================
-# STEP 3 - MAP SHARE
-# ============================================
+Copy-Item "Z:\InnerProcess.txt" "$OuterSavePath\CopiedFromInner.txt" -Force
 
-$SharePath = "\\$InnerIP\InnerShare"
+Remove-PSDrive -Name Z -Force
+"@ | Out-File -FilePath $NestedScriptPath -Force
 
-if (Get-PSDrive -Name $DriveName -ErrorAction SilentlyContinue) {
-    Remove-PSDrive -Name $DriveName -Force
-}
+# =======================================
+# CREATE SCHEDULED TASK TO RUN SCRIPT
+# =======================================
 
-New-PSDrive -Name $DriveName `
-            -PSProvider FileSystem `
-            -Root $SharePath `
-            -Credential $Cred `
-            -ErrorAction Stop | Out-Null
+$Action  = New-ScheduledTaskAction -Execute "PowerShell.exe" -Argument "-ExecutionPolicy Bypass -File $NestedScriptPath"
+$Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1)
+$Principal = New-ScheduledTaskPrincipal -UserId "Administrator" -LogonType Password -RunLevel Highest
 
-Write-Host "Mapped share successfully."
+Register-ScheduledTask -TaskName "NestedVMTask" `
+                        -Action $Action `
+                        -Trigger $Trigger `
+                        -User "Administrator" `
+                        -Password "$InnerPassword" `
+                        -RunLevel Highest `
+                        -Force
 
-# ============================================
-# STEP 4 - COPY FILE TO OUTER VM
-# ============================================
-
-Copy-Item "${DriveName}:\InnerProcess.txt" `
-          "$OuterSavePath\CopiedFromInner.txt" `
-          -Force `
-          -ErrorAction Stop
-
-Write-Host "File copied successfully to Outer VM."
-
-# ============================================
-# CLEANUP
-# ============================================
-
-Remove-PSDrive -Name $DriveName -Force -ErrorAction SilentlyContinue
-
-Write-Host "Script completed successfully."
+Write-Host "Scheduled task created. Nested execution will run in 1 minute."
 
 exit 0
