@@ -1,39 +1,75 @@
-$flagFile = "C:\hyperv_installed.txt"
+# =========================
+# CONFIGURATION
+# =========================
 
-# If Hyper-V not installed
-if (!(Test-Path $flagFile)) {
+$InnerVMName = "InnerVM"
+$InnerUsername = "Administrator"
+$InnerPassword = "YourPasswordHere"   # change this
+$OuterSavePath = "C:\OuterTemp"
 
-    Install-WindowsFeature -Name Hyper-V -IncludeManagementTools -Restart
+# Convert password
+$SecurePass = ConvertTo-SecureString $InnerPassword -AsPlainText -Force
+$Cred = New-Object System.Management.Automation.PSCredential ($InnerUsername, $SecurePass)
 
-    # Create flag file after restart
-    New-Item -Path $flagFile -ItemType File -Force
-    exit
+# Ensure outer folder exists
+if (!(Test-Path $OuterSavePath)) {
+    New-Item -ItemType Directory -Path $OuterSavePath
 }
 
-# After reboot - continue
+# =========================
+# STEP 1 - Run inside Inner VM
+# =========================
 
-# Create shared folder
-New-Item -Path C:\SharedFolder -ItemType Directory -Force
+Invoke-Command -VMName $InnerVMName -Credential $Cred -ScriptBlock {
 
-# Create internal switch
-if (-not (Get-VMSwitch -Name "InternalSwitch" -ErrorAction SilentlyContinue)) {
-    New-VMSwitch -Name "InternalSwitch" -SwitchType Internal
+    # Create Temp folder if missing
+    if (!(Test-Path "C:\Temp")) {
+        New-Item -ItemType Directory -Path "C:\Temp"
+    }
+
+    # Save process list
+    Get-Process | Out-File "C:\Temp\InnerProcess.txt"
+
+    # Create SMB Share
+    if (!(Get-SmbShare -Name "InnerShare" -ErrorAction SilentlyContinue)) {
+        New-SmbShare -Name "InnerShare" -Path "C:\Temp" -FullAccess "Everyone"
+    }
+
 }
 
-# Create VHD
-if (-not (Test-Path "C:\InnerVM.vhdx")) {
-    New-VHD -Path "C:\InnerVM.vhdx" -SizeBytes 20GB -Dynamic
+Write-Host "Process file created and shared inside Inner VM." -ForegroundColor Green
+
+# =========================
+# STEP 2 - Get Inner VM IP
+# =========================
+
+$InnerIP = (Invoke-Command -VMName $InnerVMName -Credential $Cred -ScriptBlock {
+    (Get-NetIPAddress -AddressFamily IPv4 `
+        | Where-Object {$_.IPAddress -notlike "169.*"} `
+        | Select-Object -First 1).IPAddress
+})
+
+Write-Host "Inner VM IP is $InnerIP" -ForegroundColor Yellow
+
+# =========================
+# STEP 3 - Map & Copy To Outer
+# =========================
+
+$SharePath = "\\$InnerIP\InnerShare"
+$DriveName = "Z"
+
+# Remove drive if exists
+if (Get-PSDrive -Name $DriveName -ErrorAction SilentlyContinue) {
+    Remove-PSDrive -Name $DriveName -Force
 }
 
-# Create Inner VM
-if (-not (Get-VM -Name "InnerVM" -ErrorAction SilentlyContinue)) {
-    New-VM -Name "InnerVM" `
-        -MemoryStartupBytes 2GB `
-        -VHDPath "C:\InnerVM.vhdx" `
-        -SwitchName "InternalSwitch"
-}
+# Map drive
+New-PSDrive -Name $DriveName `
+            -PSProvider FileSystem `
+            -Root $SharePath `
+            -Credential $Cred
 
-Start-VM -Name "InnerVM"
+# Copy file to Outer VM
+Copy-Item "$DriveName:\InnerProcess.txt" "$OuterSavePath\CopiedFromInner.txt"
 
-# Save simulated output
-Get-Process | Out-File C:\SharedFolder\process.txt
+Write-Host "File copied to outer VM successfully." -ForegroundColor Cyan
