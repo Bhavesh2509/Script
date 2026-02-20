@@ -1,122 +1,91 @@
-$ErrorActionPreference = "Stop"
-Write-Output "Starting VM configuration..."
+# ==============================
+# Output + Logging
+# ==============================
+$OutDir = "C:\CSE"
+New-Item -Path $OutDir -ItemType Directory -Force | Out-Null
+Start-Transcript -Path "$OutDir\install.log" -Force
+
+Write-Output "===== Script Started ====="
 
 # ==============================
-# INSTALL CHROME (Enterprise MSI)
+# Install Google Chrome
 # ==============================
 try {
-    Write-Output "Installing Chrome..."
+    Write-Output "Downloading Chrome..."
     $chromeInstaller = "$env:TEMP\chrome.msi"
-
     Invoke-WebRequest `
-        -Uri "https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi" `
+        -Uri "https://dl.google.com/chrome/install/GoogleChromeEnterprise64.msi" `
         -OutFile $chromeInstaller `
         -UseBasicParsing
 
+    Write-Output "Installing Chrome..."
     $process = Start-Process msiexec.exe `
         -ArgumentList "/i `"$chromeInstaller`" /qn /norestart" `
         -PassThru
 
-    $process.WaitForExit(600000)
+    $process.WaitForExit(600000)  # 10 minutes max
 
     if ($process.ExitCode -ne 0) {
         Write-Output "Chrome install failed with exit code $($process.ExitCode)"
+    } else {
+        Write-Output "Chrome installed successfully"
     }
-    else {
-        Write-Output "Chrome installed successfully."
-    }
-
-    Remove-Item $chromeInstaller -Force
 }
 catch {
-    Write-Output "Chrome installation error: $($_.Exception.Message)"
+    Write-Output "Chrome installation error: $_"
 }
 
 # ==============================
-# INSTALL IIS
+# Install VS Code
 # ==============================
 try {
-    Write-Output "Installing IIS..."
-
-    if (Get-Command Install-WindowsFeature -ErrorAction SilentlyContinue) {
-        Install-WindowsFeature -Name Web-Server -IncludeManagementTools
-    }
-    else {
-        Enable-WindowsOptionalFeature -Online -FeatureName IIS-WebServerRole -All -NoRestart
-    }
-
-    Write-Output "IIS installed."
-}
-catch {
-    Write-Output "IIS installation error: $($_.Exception.Message)"
-}
-
-# ==============================
-# DEPLOY CUSTOM HTML
-# ==============================
-try {
-    Write-Output "Deploying IIS page..."
-
-    $sitePath = "C:\inetpub\wwwroot\index.html"
-
-    $htmlContent = @"
-<html>
-<head><title>Azure VM</title></head>
-<body>
-<h1>Hello from Azure VM!</h1>
-<p>Installed via Custom Script Extension.</p>
-</body>
-</html>
-"@
-
-    Set-Content -Path $sitePath -Value $htmlContent -Force
-
-    Write-Output "Custom page deployed."
-}
-catch {
-    Write-Output "HTML deployment error: $($_.Exception.Message)"
-}
-
-# ==============================
-# INSTALL VS CODE (SYSTEM VERSION)
-# ==============================
-try {
-    Write-Output "Installing VS Code..."
-
-    $vsInstaller = "$env:TEMP\vscode.exe"
-    $vsPath = "C:\Program Files\Microsoft VS Code\Code.exe"
-
+    Write-Output "Downloading VS Code..."
+    $vscodeInstaller = "$env:TEMP\vscode.exe"
     Invoke-WebRequest `
         -Uri "https://update.code.visualstudio.com/latest/win32-x64/stable" `
-        -OutFile $vsInstaller `
+        -OutFile $vscodeInstaller `
         -UseBasicParsing
 
-    $vsProcess = Start-Process $vsInstaller `
+    Write-Output "Installing VS Code..."
+    Start-Process -FilePath $vscodeInstaller `
         -ArgumentList "/VERYSILENT /NORESTART /MERGETASKS=!runcode" `
-        -PassThru
+        -Wait
 
-    $vsProcess.WaitForExit(600000)
+    Start-Sleep -Seconds 15
+    Write-Output "VS Code installed"
+}
+catch {
+    Write-Output "VS Code installation error: $_"
+}
 
-    if ($vsProcess.ExitCode -ne 0) {
-        Write-Output "VS Code installer failed with exit code $($vsProcess.ExitCode)"
-    }
-    else {
-        Write-Output "VS Code installed successfully."
-    }
+# ==============================
+# Install VS Code Extensions (SYSTEM Profile)
+# ==============================
+try {
+    $codeCmd = "C:\Program Files\Microsoft VS Code\bin\code.cmd"
 
-    Remove-Item $vsInstaller -Force
+    if (Test-Path $codeCmd) {
 
-    # Install Extensions
-    if (Test-Path $vsPath) {
         Write-Output "Installing VS Code extensions..."
-        & $vsPath --install-extension ms-python.python --force
-        & $vsPath --install-extension ms-vscode.cpptools --force
-        Write-Output "Extensions installed."
+
+        & $codeCmd --install-extension ms-azuretools.vscode-azurearmtools --force
+        & $codeCmd --install-extension ms-vscode.powershell --force
+        & $codeCmd --install-extension ms-azuretools.vscode-docker --force
+
+        Start-Sleep -Seconds 10
+
+        Write-Output "Installed Extensions:"
+        & $codeCmd --list-extensions | Tee-Object "$OutDir\extensions-installed.txt"
+
+        Write-Output "Extensions installed successfully"
+
+    } else {
+        Write-Output "VS Code command not found"
     }
 }
 catch {
-    Write-Output "VS Code installation error: $($_.Exception.Message)"
+    Write-Output "Extension installation error: $_"
 }
 
-Write-Output "Script completed successfully."
-exit 0
+Write-Output "===== Script Completed ====="
+Stop-Transcript
