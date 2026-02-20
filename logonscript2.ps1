@@ -1,39 +1,95 @@
-# Install Google Chrome (Enterprise MSI)
-Write-Output "Installing Google Chrome..."
-$chromeInstaller = "$env:TEMP\chrome.msi"
-Invoke-WebRequest -Uri "https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi" -OutFile $chromeInstaller
-Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$chromeInstaller`" /quiet /norestart" -Wait
-Remove-Item $chromeInstaller -Force
+$ErrorActionPreference = "Stop"
+Write-Output "Starting configuration..."
 
-# Install IIS
-Write-Output "Installing IIS..."
-Install-WindowsFeature -Name Web-Server -IncludeManagementTools
+# ========================
+# Install Chrome (MSI)
+# ========================
+try {
+    Write-Output "Installing Chrome..."
+    $chromeInstaller = "$env:TEMP\chrome.msi"
 
-# Add custom HTML page
-Write-Output "Adding custom HTML page..."
-$sitePath = "C:\inetpub\wwwroot\index.html"
-$htmlContent = @"
+    Invoke-WebRequest `
+        -Uri "https://dl.google.com/dl/chrome/install/googlechromestandaloneenterprise64.msi" `
+        -OutFile $chromeInstaller
+
+    Start-Process msiexec.exe `
+        -ArgumentList "/i `"$chromeInstaller`" /qn /norestart" `
+        -Wait
+
+    Remove-Item $chromeInstaller -Force
+}
+catch {
+    Write-Output "Chrome install failed: $($_.Exception.Message)"
+}
+
+# ========================
+# Install IIS (Server vs Client safe)
+# ========================
+try {
+    Write-Output "Installing IIS..."
+    
+    if (Get-Command Install-WindowsFeature -ErrorAction SilentlyContinue) {
+        Install-WindowsFeature -Name Web-Server -IncludeManagementTools
+    }
+    else {
+        Enable-WindowsOptionalFeature -Online -FeatureName IIS-WebServerRole -All -NoRestart
+    }
+}
+catch {
+    Write-Output "IIS failed: $($_.Exception.Message)"
+}
+
+# ========================
+# Add Custom HTML
+# ========================
+try {
+    Write-Output "Adding IIS page..."
+    
+    $sitePath = "C:\inetpub\wwwroot\index.html"
+    $htmlContent = @"
 <html>
 <head><title>Welcome</title></head>
 <body>
 <h1>Hello from Azure VM!</h1>
-<p>This is a custom IIS page deployed via raw script + CSE.</p>
+<p>Deployed via Azure CSE.</p>
 </body>
 </html>
 "@
-Set-Content -Path $sitePath -Value $htmlContent -Force
 
-# Install Visual Studio Code (Silent EXE)
-Write-Output "Installing Visual Studio Code..."
-$vsInstaller = "$env:TEMP\vscode_installer.exe"
-Invoke-WebRequest -Uri "https://update.code.visualstudio.com/latest/win32-x64-user/stable" -OutFile $vsInstaller
-Start-Process -FilePath $vsInstaller -ArgumentList "/VERYSILENT /MERGETASKS=!runcode" -Wait
-Remove-Item $vsInstaller -Force
+    Set-Content -Path $sitePath -Value $htmlContent -Force
+}
+catch {
+    Write-Output "HTML failed"
+}
 
-# Create logon task for VS Code extensions
-Write-Output "Creating logon task for VS Code extensions..."
-$taskName = "InstallVSCodeExtensions"
-$action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -Command `"code --install-extension ms-python.python; code --install-extension ms-vscode.cpptools`""
-$trigger = New-ScheduledTaskTrigger -AtLogOn
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -User "<ADMIN_USERNAME>" -RunLevel Highest -Force
+# ========================
+# Install VS Code SYSTEM Version
+# ========================
+try {
+    Write-Output "Installing VS Code..."
+    
+    $vsInstaller = "$env:TEMP\vscode.exe"
+    $vsPath = "C:\Program Files\Microsoft VS Code\Code.exe"
 
+    Invoke-WebRequest `
+        -Uri "https://update.code.visualstudio.com/latest/win32-x64/stable" `
+        -OutFile $vsInstaller
+
+    Start-Process $vsInstaller `
+        -ArgumentList "/VERYSILENT /NORESTART /MERGETASKS=!runcode" `
+        -Wait
+
+    Remove-Item $vsInstaller -Force
+
+    if (Test-Path $vsPath) {
+        Write-Output "Installing extensions..."
+        & $vsPath --install-extension ms-python.python --force
+        & $vsPath --install-extension ms-vscode.cpptools --force
+    }
+}
+catch {
+    Write-Output "VS Code failed: $($_.Exception.Message)"
+}
+
+Write-Output "Script completed successfully."
+exit 0
