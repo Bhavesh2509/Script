@@ -2,13 +2,11 @@
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
   "contentVersion": "1.0.0.0",
 
-  "parameters": {
-    "storageAccountName": {
-      "type": "string",
-      "metadata": {
-        "description": "Globally unique storage account name (3-24 lowercase letters/numbers)."
-      }
-    },
+    "storageAccountName":{
+      "type":"string",
+      "defaultValue":"StorageAccCloudLabs123"
+    }
+    
     "containerName": {
       "type": "string",
       "defaultValue": "scripts"
@@ -48,3 +46,4 @@
     }
   ]
 }
+
